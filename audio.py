@@ -42,13 +42,55 @@ def render_chord(notes, dur=2.0, strum_ms=25, fs=FS):
 
 class ChordPlayer:
     def __init__(self):
+        import sounddevice as sd
+        import threading
+
         print("Rendering chords...")
         self.buffers = {n: render_chord(notes) for n, (_, notes) in CHORDS.items()}
+        self._voices = []
+        self._lock = threading.Lock()
+
+        # Persistent low-latency audio stream to avoid stream startup delay
+        self.stream = sd.OutputStream(
+            samplerate=FS,
+            channels=1,
+            latency="low",
+            callback=self._callback,
+        )
+        self.stream.start()
+
+    def _callback(self, outdata, frames, time_info, status):
+        outdata.fill(0)
+        with self._lock:
+            active = []
+            for voice in self._voices:
+                buf, pos = voice
+                rem = len(buf) - pos
+                chunk = min(frames, rem)
+                outdata[:chunk, 0] += buf[pos : pos + chunk]
+                pos += chunk
+                if pos < len(buf):
+                    active.append([buf, pos])
+            self._voices = active
+        np.clip(outdata, -1.0, 1.0, out=outdata)
 
     def play(self, number):
-        import sounddevice as sd
-        sd.stop()                       # cut the previous chord
-        sd.play(self.buffers[number], FS)   # non-blocking
+        """Immediately trigger chord with zero delay (non-blocking)."""
+        buf = self.buffers.get(number)
+        if buf is not None:
+            with self._lock:
+                # Keep up to 3 active voices for smooth transitions without clipping
+                if len(self._voices) >= 3:
+                    self._voices = self._voices[-2:]
+                self._voices.append([buf, 0])
+
+    def close(self):
+        """Close audio stream cleanly."""
+        try:
+            self.stream.stop()
+            self.stream.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
