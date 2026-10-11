@@ -14,11 +14,14 @@ RunningMode        = mp.tasks.vision.RunningMode
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_landmarker.task")
 PINCH_ON, PINCH_OFF = 0.32, 0.40
+MODEL_FILE = "models/gesture_model.joblib"
 STRUM_INTERVAL = 0.50  # seconds between auto-strums while holding pinch
 
 
 def main():
-    model  = joblib.load("models/svm.joblib")
+    if not os.path.exists(MODEL_FILE):
+        raise SystemExit(f"{MODEL_FILE} not found. Run python train_svm.py first.")
+    model  = joblib.load(MODEL_FILE)
     player = ChordPlayer()
 
     options = HandLandmarkerOpts(

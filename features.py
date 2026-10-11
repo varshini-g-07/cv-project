@@ -29,8 +29,11 @@ HAND_CONNECTIONS = [
 ]
 
 # The frame is mirrored (selfie view) before MediaPipe sees it.
-GESTURE_HAND = "Right"   # shows the number gesture 1-7
-TRIGGER_HAND = "Left"    # pinch to play the chord
+# Right hand shows the number gesture 1-7, left hand pinches to play the chord.
+# (The demo and the collector pick hands by screen position -- see pick_gesture_hand --
+# so these two labels are only used by pick_hand, which nothing calls right now.)
+GESTURE_HAND = "Right"
+TRIGGER_HAND = "Left"
 
 
 def landmarks_to_array(hand_landmarks, w, h):
@@ -49,6 +52,21 @@ def pick_hand(result, wanted_label):
         if handedness_list[0].category_name == wanted_label:
             return lm_list
     return None
+
+
+def pick_gesture_hand(result):
+    """Choose which detected hand to read the number gesture from.
+
+    Uses the same rule as realtime_demo.py: with two hands in view, the gesture hand is the
+    one on the right side of the mirrored screen (your right hand); with one hand in view,
+    that hand is used. This does not rely on MediaPipe's left/right labels.
+    """
+    if not result or not result.hand_landmarks:
+        return None
+    hands = result.hand_landmarks
+    if len(hands) == 1:
+        return hands[0]
+    return max(hands[:2], key=lambda lm: lm[0].x)   # lm[0] is the wrist; larger x = further right
 
 
 def draw_hand(frame, lm_list, w, h, color=(0, 255, 0)):

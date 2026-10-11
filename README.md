@@ -1,33 +1,38 @@
 # Gesture-controlled chord instrument (based on AIR Guitar, Ke & Chen)
 
-Left hand shows a number gesture 1-7 -> SVM classifies it -> chord (C major, Nashville numbers).
-Right hand pinches (thumb + index) -> the current chord is played.
+Right hand shows a number gesture 1-7 -> classifier predicts it -> chord (C major, Nashville numbers).
+Left hand pinches (thumb + index) -> the current chord is played. Press `s` in the demo to swap hands.
 
 ## Setup
-    pip install -r requirements.txt     # check MediaPipe's supported Python versions first
+    pip install -r requirements.txt
+Also download MediaPipe's `hand_landmarker.task` model file (from the Hand Landmarker page of the
+MediaPipe docs) and put it in this folder, next to the scripts.
 
 ## Workflow
-1. `python collect_data.py --person alice`   (each group member records their own data;
-   record several sessions with different distance, tilt, lighting)
-2. `python train_svm.py`                     (prints random-split vs leave-one-person-out accuracy)
-3. `python realtime_demo.py`                 (live demo; FPS shown on screen)
+1. `python collect_data.py --person alice`   (each member records all 7 gestures; use the same name
+   every time. With two hands in view, the hand on the right of the screen is recorded.)
+2. `python train_svm.py`                     (evaluates Extra Trees AND an SVM, then saves one model;
+   `--model svm` saves the SVM, default saves Extra Trees)
+3. `python realtime_demo.py`                 (live demo; loads models/gesture_model.joblib)
+
+## Reading the training output
+- Random-split accuracy is optimistic (neighbouring frames leak across the split).
+- Leave-one-person-out accuracy is the honest number: each person is held out in turn.
+- Per-gesture recall and the confusion matrices show which gestures get mixed up.
 
 ## Files
-- features.py       keypoints -> 39 geometric features; hand selection; pinch ratio
-- audio.py          Karplus-Strong chord synthesis + playback (`python audio.py` to test sound)
-- collect_data.py   record labelled samples
-- train_svm.py      train + evaluate + save model
+- features.py       keypoints -> 39 geometric features; hand selection; drawing
+- audio.py          Karplus-Strong chord synthesis + low-latency playback (`python audio.py` to test)
+- collect_data.py   record labelled samples (writes data/<person>.csv)
+- train_svm.py      evaluate + save the gesture model
 - realtime_demo.py  full pipeline
 
-## Still to build (suggested split)
-- cnn_baseline.py: small 3-layer CNN on cropped hand images; compare accuracy, FPS, latency, training time
+## Still to build
+- cnn_baseline.py: small CNN on cropped hand images; compare accuracy, FPS, latency, training time
 - Robustness tests: lighting, distance, hand size, background
-- Optional: hand detector (YOLO) in front of the pipeline; chord-shape mode
+- Use a public dataset (e.g. Kaggle Fingers for gestures 1-5), as the professor requires
 
 ## Notes
-- Written against MediaPipe's `mp.solutions.hands` API. If your installed version has removed
-  it, switch to the newer MediaPipe Tasks HandLandmarker (needs a downloaded model file).
-- Features are already rotation-invariant in the image plane, so rotating keypoints adds nothing;
+- Features are rotation-invariant in the image plane, so rotating keypoints adds nothing;
   rotation augmentation only helps if you augment images before keypoint detection.
-- Not yet run end to end on a webcam: the first thing to do is tune GESTURE_HAND/TRIGGER_HAND
-  and the pinch thresholds.
+- Features are stored in the CSVs (not raw landmarks), so changing the features means re-recording.

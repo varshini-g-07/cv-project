@@ -10,7 +10,7 @@ Controls:
 import argparse, csv, os, time
 import cv2
 import mediapipe as mp
-from features import (extract_features, landmarks_to_array, draw_hand)
+from features import (extract_features, landmarks_to_array, draw_hand, pick_gesture_hand)
 
 BaseOptions        = mp.tasks.BaseOptions
 HandLandmarker     = mp.tasks.vision.HandLandmarker
@@ -93,8 +93,9 @@ def main():
                 if result and result.hand_landmarks:
                     for lm_list in result.hand_landmarks:
                         draw_hand(frame, lm_list, w, h)
-                    # Whichever hand is in view is accepted
-                    hand = result.hand_landmarks[0]
+                    # Same rule as the live demo: one hand -> use it; two hands -> use the
+                    # one on the right of the mirrored screen (the gesture hand)
+                    hand = pick_gesture_hand(result)
 
                 # Check countdown state
                 if countdown_seconds > 0:
