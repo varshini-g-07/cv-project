@@ -1,11 +1,20 @@
 """Webcam -> right hand (chords) -> left hand pinch (plays chord).
-Run after train_svm.py. Press q to quit, s to swap hands."""
-import collections, os, time
+Run after train_svm.py. Press q to quit, s to swap hands.
+
+Play-along song test (for the report card):
+  p = start the next song (Let It Be, Stand By Me, ...). The screen shows which
+      chord to play next and how many fingers to show. Release the pinch between
+      chords: every NEW pinch counts as one bar.
+  n = skip the current bar (counts as a miss).
+At the end of the song a report card is saved in reports/ and shown on screen."""
+import collections, os, re, time
 import cv2
 import joblib
 import mediapipe as mp
-from audio import CHORDS, ChordPlayer
+from audio import CHORDS, FS, ChordPlayer
+from chord_judge import judge
 from features import (extract_features, landmarks_to_array, pinch_ratio, draw_hand)
+from songs import NAME_TO_NUMBER, SONGS
 
 BaseOptions        = mp.tasks.BaseOptions
 HandLandmarker     = mp.tasks.vision.HandLandmarker
@@ -32,11 +41,60 @@ def draw_badge(img, text, pt, bg_color, text_color=(255, 255, 255), scale=0.55, 
     cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, text_color, thickness, cv2.LINE_AA)
 
 
+def draw_song_strip(img, song, chords, done, step):
+    """Bottom strip: one box per bar. Green = right, red = wrong, yellow = play this now."""
+    h, w = img.shape[:2]
+    n = len(chords)
+    box_w = min(90, (w - 40) // n)
+    y0 = h - 110
+    for i, c in enumerate(chords):
+        x0 = 20 + i * box_w
+        if i < len(done):
+            col = (40, 160, 40) if done[i] else (40, 40, 200)
+        elif i == step:
+            col = (0, 200, 230)
+        else:
+            col = (90, 90, 90)
+        cv2.rectangle(img, (x0 + 2, y0), (x0 + box_w - 2, y0 + 40), col, -1)
+        cv2.putText(img, c, (x0 + 10, y0 + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    if step < n:
+        target = chords[step]
+        msg = f"PLAY-ALONG {song}: bar {step + 1}/{n} -> play {target} (show {NAME_TO_NUMBER[target]} fingers)"
+    else:
+        msg = f"PLAY-ALONG {song}: finished"
+    draw_badge(img, msg, (20, y0 - 15), (60, 60, 60), scale=0.6)
+
+
+def finish_song(session, player):
+    """Save the play-along session and show its report card."""
+    from report_card import make_report
+    slug = re.sub(r"[^a-z0-9]+", "_", session["song"].lower()).strip("_")
+    out = os.path.join("reports", f"song_{slug}_camera_{time.strftime('%Y%m%d_%H%M%S')}.png")
+    lines = make_report(session, out, buffers=player.buffers)
+    print("\n".join(lines))
+    print("Saved", out)
+    card = cv2.imread(out)
+    if card is not None:
+        cv2.imshow("Report card", card)
+
+
 def main():
     if not os.path.exists(MODEL_FILE):
         raise SystemExit(f"{MODEL_FILE} not found. Run python train_svm.py first.")
     model  = joblib.load(MODEL_FILE)
     player = ChordPlayer()
+
+    # Sound check at startup: the judge listens to every chord the instrument can play.
+    sound_check = {n: judge(buf, FS, expected=CHORDS[n][0]) for n, buf in player.buffers.items()}
+    for n in sorted(sound_check):
+        print(f"Sound check, gesture {n}: {sound_check[n]['sentence']}")
+    last_sound_msg = None
+
+    # Play-along state
+    song_names = list(SONGS)
+    song_i = -1
+    session = None          # dict while a song is being played
+    t0 = None
 
     options = HandLandmarkerOpts(
         base_options=BaseOptions(model_asset_path=MODEL_PATH),
@@ -129,6 +187,17 @@ def main():
                                 player.play(current)
                                 last_played_chord = current
                                 last_strum_time = now
+                                r = sound_check[current]
+                                last_sound_msg = (f"SOUND CHECK: judge heard {r['heard']} "
+                                                  f"({'RIGHT' if r['ok'] else 'WRONG'})", r["ok"])
+                                # Play-along: every new pinch = one bar of the song
+                                if session is not None and len(session["steps"]) < len(SONGS[session["song"]]):
+                                    if t0 is None:
+                                        t0 = now
+                                    k = len(session["steps"])
+                                    session["steps"].append({"expected": SONGS[session["song"]][k],
+                                                             "shown_number": int(current),
+                                                             "t": round(now - t0, 3)})
                         else:
                             # Immediate chord switch while holding pinch
                             if current is not None and current != last_played_chord:
@@ -203,9 +272,27 @@ def main():
 
                 # Bottom control hint
                 mode_str = "Hands: Left=Strum, Right=Chord" if not swapped else "Hands: Left=Chord, Right=Strum [SWAPPED]"
-                hint_str = f"{mode_str}  |  [S] Swap  [Q] Quit"
+                hint_str = f"{mode_str}  |  [S] Swap  [P] Play-along song  [N] Skip bar  [Q] Quit"
                 cv2.putText(frame, hint_str, (20, h - 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
+
+                # Sound check badge for the last strum
+                if last_sound_msg is not None:
+                    msg, ok = last_sound_msg
+                    draw_badge(frame, msg, (20, 85), (0, 130, 40) if ok else (0, 0, 180))
+
+                # Play-along: count frames, draw the song strip, finish when all bars are played
+                if session is not None:
+                    session["frames_total"] += 1
+                    session["frames_hand_seen"] += g_hand is not None
+                    chords = SONGS[session["song"]]
+                    done = [s["shown_number"] == NAME_TO_NUMBER[s["expected"]] for s in session["steps"]]
+                    draw_song_strip(frame, session["song"], chords, done, len(session["steps"]))
+                    if len(session["steps"]) == len(chords):
+                        cv2.imshow("AIR gesture instrument", frame)
+                        cv2.waitKey(1)
+                        finish_song(session, player)
+                        session = None
 
                 cv2.imshow("AIR gesture instrument", frame)
 
@@ -214,6 +301,18 @@ def main():
                     break
                 elif key == ord("s"):  # Press 's' to swap anytime if desired
                     swapped = not swapped
+                elif key == ord("p"):  # start the next play-along song
+                    song_i = (song_i + 1) % len(song_names)
+                    session = {"song": song_names[song_i], "mode": "camera", "steps": [],
+                               "frames_total": 0, "frames_hand_seen": 0}
+                    t0 = None
+                    print(f"Play-along: {session['song']} -> {' '.join(SONGS[session['song']])}")
+                elif key == ord("n") and session is not None:  # skip a bar (counts as a miss)
+                    k = len(session["steps"])
+                    if k < len(SONGS[session["song"]]):
+                        session["steps"].append({"expected": SONGS[session["song"]][k],
+                                                 "shown_number": None,
+                                                 "t": round(time.time() - t0, 3) if t0 else 0.0})
     finally:
         player.close()
         cap.release()

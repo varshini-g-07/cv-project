@@ -13,7 +13,13 @@ MediaPipe docs) and put it in this folder, next to the scripts.
    every time. With two hands in view, the hand on the right of the screen is recorded.)
 2. `python train_svm.py`                     (evaluates Extra Trees AND an SVM, then saves one model;
    `--model svm` saves the SVM, default saves Extra Trees)
-3. `python realtime_demo.py`                 (live demo; loads models/gesture_model.joblib)
+3. `python realtime_demo.py`                 (live demo; loads models/gesture_model.joblib;
+   press `p` for a play-along song test with a report card)
+
+## Checking correctness (see EVALUATION.md)
+- `python chord_judge.py`  - judge tested on real guitars, then on every chord we play -> reports/chord_check.png
+- `python chord_lab.py`    - Play ours / Play real buttons + note meter for each chord
+- `python song_test.py`    - songs played into the sound engine, checked bar by bar -> reports/song_*.png
 
 ## Reading the training output
 - Random-split accuracy is optimistic (neighbouring frames leak across the split).

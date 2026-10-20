@@ -2,6 +2,7 @@
 import numpy as np
 
 FS = 44100
+DAMP_SAMPLES = int(0.08 * FS)   # old chord fades out over 80 ms when a new strum starts
 
 # Nashville number -> (chord name, MIDI notes) in the key of C major
 CHORDS = {
@@ -19,9 +20,11 @@ def midi_to_freq(m):
     return 440.0 * 2 ** ((m - 69) / 12)
 
 
-def pluck(freq, dur=2.0, fs=FS, decay=0.996):
+def pluck(freq, dur=2.0, fs=FS, decay=0.996, seed=None):
     n_delay = int(fs / freq)
-    buf = np.random.uniform(-1, 1, n_delay)
+    # Seeded noise burst -> the instrument sounds identical every run, so the sound
+    # checked by chord_judge.py is exactly the sound the live demo plays.
+    buf = np.random.default_rng(seed).uniform(-1, 1, n_delay)
     out = np.empty(int(dur * fs))
     for i in range(len(out)):
         k = i % n_delay
@@ -35,7 +38,7 @@ def render_chord(notes, dur=2.0, strum_ms=25, fs=FS):
     total = int(dur * fs) + delay * len(notes)
     mix = np.zeros(total)
     for i, m in enumerate(notes):
-        tone = pluck(midi_to_freq(m), dur, fs)
+        tone = pluck(midi_to_freq(m), dur, fs, seed=m)
         mix[i * delay : i * delay + len(tone)] += tone
     return (0.8 * mix / (np.max(np.abs(mix)) + 1e-9)).astype(np.float32)
 
@@ -63,14 +66,19 @@ class ChordPlayer:
         outdata.fill(0)
         with self._lock:
             active = []
-            for voice in self._voices:
-                buf, pos = voice
+            for buf, pos, fade in self._voices:
                 rem = len(buf) - pos
                 chunk = min(frames, rem)
-                outdata[:chunk, 0] += buf[pos : pos + chunk]
+                if fade is not None:                       # damped voice: fade out
+                    chunk = min(chunk, fade)
+                    gain = np.linspace(fade, fade - chunk, chunk, endpoint=False) / DAMP_SAMPLES
+                    outdata[:chunk, 0] += buf[pos : pos + chunk] * gain
+                    fade -= chunk
+                else:
+                    outdata[:chunk, 0] += buf[pos : pos + chunk]
                 pos += chunk
-                if pos < len(buf):
-                    active.append([buf, pos])
+                if pos < len(buf) and (fade is None or fade > 0):
+                    active.append([buf, pos, fade])
             self._voices = active
         np.clip(outdata, -1.0, 1.0, out=outdata)
 
@@ -79,10 +87,18 @@ class ChordPlayer:
         buf = self.buffers.get(number)
         if buf is not None:
             with self._lock:
-                # Keep up to 3 active voices for smooth transitions without clipping
-                if len(self._voices) >= 3:
-                    self._voices = self._voices[-2:]
-                self._voices.append([buf, 0])
+                # Like a guitarist re-strumming: chords still ringing are damped
+                # (quick fade) so the old chord does not blur into the new one.
+                for v in self._voices:
+                    if v[2] is None:
+                        v[2] = DAMP_SAMPLES
+                self._voices.append([buf, 0, None])
+
+    def play_buffer(self, buf):
+        """Play any clip (e.g. a real guitar recording), stopping other sounds first
+        so two clips can be compared cleanly by ear."""
+        with self._lock:
+            self._voices = [[np.asarray(buf, dtype=np.float32), 0, None]]
 
     def close(self):
         """Close audio stream cleanly."""
